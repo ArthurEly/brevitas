@@ -14,15 +14,10 @@ output_label_csv = 'labels.csv'
 
 # Transformação avançada
 enhanced_transform = transforms.Compose([
-    transforms.RandomRotation(20),                     # Rotação aleatória até 20 graus
-    transforms.RandomHorizontalFlip(p=0.5),           # Espelhamento horizontal com 50% de probabilidade
-    transforms.RandomVerticalFlip(p=0.2),             # Espelhamento vertical com 20% de probabilidade
-    transforms.RandomResizedCrop((32, 32), scale=(0.8, 1.0)),  # Recorte com redimensionamento
-    transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1), # Alteração de cores
-    transforms.RandomGrayscale(p=0.1),                # Conversão para tons de cinza com 10% de probabilidade
-    transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0)),  # Desfoque gaussiano
+    transforms.RandomRotation(45),                     # Rotação aleatória até 20 graus
+    transforms.RandomHorizontalFlip(),           # Espelhamento horizontal com 50% de probabilidade
+    transforms.RandomVerticalFlip(),             # Espelhamento vertical com 20% de probabilidade
     transforms.ToTensor(),                            # Conversão para tensor
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Normalização
 ])
 
 def process_images(base_dir, classes, output_image_csv, output_label_csv):
@@ -33,7 +28,7 @@ def process_images(base_dir, classes, output_image_csv, output_label_csv):
             img_path = os.path.join(class_dir, img_name)
             try:
                 with Image.open(img_path) as img:
-                    img = img.resize((32, 32)).convert('RGB')
+                    img = img.resize((64, 64)).convert('RGB')
                     img_array = np.array(img)
                 images.append(img_array)
                 labels.append(idx)

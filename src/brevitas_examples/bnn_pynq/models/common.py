@@ -12,6 +12,7 @@ from brevitas.core.zero_point import ZeroZeroPoint
 from brevitas.inject import ExtendedInjector
 from brevitas.quant.solver import ActQuantSolver
 from brevitas.quant.solver import WeightQuantSolver
+from brevitas.quant import Uint8ActPerTensorFloat
 
 
 class CommonQuant(ExtendedInjector):
@@ -41,3 +42,13 @@ class CommonWeightQuant(CommonQuant, WeightQuantSolver):
 class CommonActQuant(CommonQuant, ActQuantSolver):
     min_val = -1.0
     max_val = 1.0
+
+
+class CommonUintActQuant(Uint8ActPerTensorFloat):
+    """
+    Common unsigned act quantizer with bit-width set to None so that it's forced to be specified by
+    each layer.
+    """
+    scaling_min_val = 2e-16
+    bit_width = None
+    restrict_scaling_type = RestrictValueType.LOG_FP
