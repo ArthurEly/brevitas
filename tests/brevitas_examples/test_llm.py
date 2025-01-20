@@ -434,7 +434,8 @@ def test_small_models_quant_layer(caplog, layer_args):
         "llama-int8-act_equalization=layerwise",
         "mistral-int8-quant-last-layer",
         "llama-rotation-mixed-fx",
-        "llama-rotation-full-fx",],
+        "llama-rotation-full-fx",
+        "llama-rotation-full-fx-sdpa"],
     params=[
         {
             "model": "hf-internal-testing/tiny-random-MistralForCausalLM",
@@ -547,6 +548,22 @@ def test_small_models_quant_layer(caplog, layer_args):
                 "<class 'torch.nn.modules.linear.Linear'>":
                     15,  # LM Head + Q/K/V projs + Up/Gate/Down projs
                 "<class 'torch.nn.modules.normalization.RMSNorm'>": 5,  # Input + Post attention
+                "<class 'torch.nn.modules.normalization.LayerNorm'>": 0,}},
+        {
+            "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            "ln_affine_merge": True,
+            "replace_rmsnorm": True,
+            "quantize_last_layer": True,
+            "no_quantize": True,
+            "rotation_orphan_sink": True,
+            "convert_layernorm_to_rmsnorm": True,
+            "rotation_sdpa_regions": True,
+            "rotation": "fx",
+            "exp_layer_types_count": {
+                "<class 'brevitas.nn.equalized_layer.RotatedModule'>": 2,  # Sinks: Only Down proj
+                "<class 'torch.nn.modules.linear.Linear'>":
+                    15,  # LM Head + Q/K/V/O projs + Up/Gate/Down projs
+                "<class 'torch.nn.modules.normalization.RMSNorm'>": 5,
                 "<class 'torch.nn.modules.normalization.LayerNorm'>": 0,}},])
 def layer_args_types_count(default_run_args, request):
     args = default_run_args
@@ -718,6 +735,91 @@ def learned_round_ppl_args_and_ppl(default_run_args, request):
 def test_small_models_learned_round_ppl(caplog, learned_round_ppl_args_and_ppl):
     caplog.set_level(logging.INFO)
     args, exp_float_ppl, exp_quant_ppl = learned_round_ppl_args_and_ppl
+    float_ppl, quant_ppl, model = validate_args_and_run_main(args)
+    float_ppl = float_ppl.detach().cpu().numpy()
+    quant_ppl = quant_ppl.detach().cpu().numpy()
+    assert allveryclose(exp_float_ppl, float_ppl), f"Expected float PPL {exp_float_ppl}, measured PPL {float_ppl}"
+    assert allveryclose(exp_quant_ppl, quant_ppl), f"Expected quant PPL {exp_quant_ppl}, measured PPL {quant_ppl}"
+
+
+@pytest_cases.fixture(
+    ids=[
+        "llama_fused_rotation_ort",
+        "llama_fused_rotation_ort_no_orphan",
+        "llama_fused_rotation_had",
+        "llama_fused_rotation_had_no_orphan",
+        "llama_layerwise",],
+    params=[
+        {
+            "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            "act_calibration": False,
+            "weight_bit_width": 4,
+            "input_bit_width": None,
+            "replace_rmsnorm": True,
+            "rotation": "fused_no_fx",
+            "rotation_orphan_sink": True,
+            "rotation_mode": "ort",
+            "float_ppl": 33238.8984375,
+            "quant_ppl": 33232.65234375},
+        {
+            "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            "act_calibration": False,
+            "weight_bit_width": 4,
+            "input_bit_width": None,
+            "replace_rmsnorm": True,
+            "rotation": "fused_no_fx",
+            "rotation_orphan_sink": False,
+            "rotation_mode": "ort",
+            "float_ppl": 33238.8984375,
+            "quant_ppl": 33420.65234375},
+        {
+            "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            "act_calibration": False,
+            "weight_bit_width": 4,
+            "input_bit_width": None,
+            "replace_rmsnorm": True,
+            "rotation": "fused_no_fx",
+            "rotation_orphan_sink": True,
+            "rotation_mode": "had",
+            "float_ppl": 33238.8984375,
+            "quant_ppl": 33290.48046875},
+        {
+            "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            "act_calibration": False,
+            "weight_bit_width": 4,
+            "input_bit_width": None,
+            "replace_rmsnorm": True,
+            "rotation": "fused_no_fx",
+            "rotation_orphan_sink": False,
+            "rotation_mode": "had",
+            "float_ppl": 33238.8984375,
+            "quant_ppl": 33204.80859375},
+        {
+            "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            "act_calibration": False,
+            "weight_bit_width": 4,
+            "input_bit_width": None,
+            "replace_rmsnorm": True,
+            "rotation": "layerwise",
+            "float_ppl": 33238.8984375,
+            "quant_ppl": 33446.734375},])
+def rotation_ppl_args_and_ppl(default_run_args, request):
+    args = default_run_args
+    run_dict = request.param
+    float_ppl = run_dict["float_ppl"]
+    quant_ppl = run_dict["quant_ppl"]
+    del run_dict["float_ppl"]
+    del run_dict["quant_ppl"]
+    args.update(**run_dict)
+    yield args, float_ppl, quant_ppl
+
+
+@requires_pt_ge('2.4')
+def test_small_models_rotation_ppl(caplog, rotation_ppl_args_and_ppl):
+    if platform.system() == "Windows":
+        pytest.skip("Skipping dynamo + windows")
+    caplog.set_level(logging.INFO)
+    args, exp_float_ppl, exp_quant_ppl = rotation_ppl_args_and_ppl
     float_ppl, quant_ppl, model = validate_args_and_run_main(args)
     float_ppl = float_ppl.detach().cpu().numpy()
     quant_ppl = quant_ppl.detach().cpu().numpy()

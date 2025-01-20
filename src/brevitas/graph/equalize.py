@@ -15,26 +15,33 @@ import packaging.version
 import torch
 from torch.fx import GraphModule as TorchGraphModule
 import torch.nn as nn
+import torch.nn.utils.parametrize as parametrize
 
 from brevitas import torch_version
 from brevitas.fx import GraphModule
 from brevitas.fx import Node
-from brevitas.graph import ModuleToModuleByClass
 from brevitas.graph import ModuleToModuleByInstance
 from brevitas.graph.base import GraphTransform
 from brevitas.graph.base import InsertModuleCallAfter
+from brevitas.graph.base import ModuleInstanceRegisterParametrization
 from brevitas.graph.base import ModuleInstanceToModuleInstance
+from brevitas.graph.base import ModuleInstanceTransformTensor
+from brevitas.graph.base import ModuleInstanceWrapModule
 from brevitas.graph.base import Transform
 from brevitas.graph.hadamard import get_hadK
 from brevitas.graph.hadamard import matmul_hadU
 from brevitas.graph.hadamard import matmul_hadU_cuda
+from brevitas.graph.hadamard import random_hadamard_matrix
 from brevitas.graph.utils import get_module
 from brevitas.graph.utils import get_node
+from brevitas.nn import ScaledDotProductAttention
 from brevitas.nn.equalized_layer import EqualizedModule
 from brevitas.nn.equalized_layer import functional_rotate_input
 from brevitas.nn.equalized_layer import INPUT_NAMES
 from brevitas.nn.equalized_layer import RotatedModule
 from brevitas.nn.quant_scale_bias import ScaleBias
+from brevitas.utils.python_utils import recurse_getattr
+from brevitas.utils.rotation_utils import RotationWeightParametrization
 from brevitas.utils.torch_utils import KwargsForwardHook
 
 # External optional dependency
@@ -1299,8 +1306,19 @@ def random_orthogonal_matrix(size):
     return q
 
 
-def _apply_rotate(model: nn.Module, regions: List[Region], full_rotation_method='had'):
+def _apply_rotate(
+        model: nn.Module,
+        regions: List[Region],
+        full_rotation_method='had',
+        fuse_rotations: bool = True,
+        apply_inplace_rotations: bool = True):
     rewriters = []
+    # First, rotations on orphan sinks are applied so the order in which rotations are
+    # applied is consistent, irrespective of the value of fuse_rotations. This is due to
+    # the fact that parametrizations need to be registered, once all the in-place
+    # operations have taken place
+    regions = [region for region in regions if len(region.srcs) == 0] + [
+        region for region in regions if len(region.srcs) > 0]
     for region in regions:
         insert_rotation_module = len(region.srcs) == 0
 
@@ -1309,6 +1327,14 @@ def _apply_rotate(model: nn.Module, regions: List[Region], full_rotation_method=
         hidden_dim = region.max_shape_sinks
         if not insert_rotation_module and full_rotation_method == 'ort':
             rot_mat = random_orthogonal_matrix(hidden_dim)
+            K = None
+            rot_func = _apply_ort_device
+        elif not insert_rotation_module and not fuse_rotations:
+            # If the model is distributed across GPUs, the device will be
+            # not be the same for all of the parameters, so explicit moves
+            # to the same device as the weights need to be added
+            device = next(model.parameters()).device
+            rot_mat = random_hadamard_matrix(hidden_dim, device)
             K = None
             rot_func = _apply_ort_device
         else:
@@ -1326,52 +1352,110 @@ def _apply_rotate(model: nn.Module, regions: List[Region], full_rotation_method=
                 print("Skipping layers")
                 continue
 
+        # Cast rotation matrix to the weight dtype
+        if rot_mat is not None:
+            dtype = next(model.parameters()).dtype
+            rot_mat = rot_mat.to(dtype=dtype)
+        # If the rotation is not fused, redefine as a Parameter, to enable its optimization
+        if not insert_rotation_module and not fuse_rotations:
+            rot_mat = torch.nn.Parameter(rot_mat)
+
         for name, indexes in region.srcs.items():
             module = region.get_module_from_name(name)
-            if hasattr(module, 'allocate_params'):
-                module.allocate_params(module)
-            axis = _get_output_axis(module)
-            weight = module.weight.data
-
-            if axis == 0:
-                weight = rot_func(weight.t(), rot_mat, K).t()
-            elif axis == 1:
-                weight = rot_func(weight, rot_mat, K)
-            else:
-                raise RuntimeError("Not supported yet")
-            module.weight.data = weight
-
-            if getattr(module, 'bias', None) is not None:
-                bias = module.bias.data
-                bias = rot_func(bias, rot_mat, K)
-                module.bias.data = bias
-            if hasattr(module, 'offload_params'):
-                module.offload_params(module)
+            # Rotate "bias" if present
+            tensor_names_axis = [("weight", _get_output_axis(module))] + ([
+                ("bias", 1)] if getattr(module, 'bias', None) is not None else [])
+            # If rotations are fused, transform is applied directly onto the tensor
+            rewriter_class = ModuleInstanceTransformTensor if fuse_rotations else ModuleInstanceRegisterParametrization
+            # Obtain rewriters for applying the rotations
+            for tensor_name, axis in tensor_names_axis:
+                rewriter = rewriter_class(
+                    module=module,
+                    tensor_name=tensor_name,
+                    transform_module=RotationWeightParametrization(
+                        rot_mat=rot_mat,
+                        rot_func=rot_func,
+                        axis=axis,
+                        K=K,
+                    ))
+                rewriters.append(rewriter)
 
         for name, indexes in region.sinks.items():
             module = region.get_module_from_name(name)
-            if hasattr(module, 'allocate_params'):
-                module.allocate_params(module)
-            axis = _get_input_axis(module)
-            weight = module.weight.data
-
-            if axis == 1:
-                _update_weights(module, rot_func(weight, rot_mat, K), 'weight')
-            elif axis == 0:
-                _update_weights(module, rot_func(weight.t(), rot_mat, K).t(), 'weight')
-            else:
-                raise RuntimeError("Not supported yet")
-
-            if hasattr(module, 'offload_params'):
-                module.offload_params(module)
-
-            if insert_rotation_module and len(region.srcs) == 0:
-                rewriter = ModuleInstanceToModuleInstance(
-                    module, RotatedModule(had_mat=rot_mat, k=K, layer=module))
+            # Only "weight" is rotated
+            tensor_names_axis = [("weight", _get_input_axis(module))]
+            # If rotations are fused or if the module is an orphan sink, transform is applied directly onto the tensor
+            rewriter_class = ModuleInstanceTransformTensor if insert_rotation_module or fuse_rotations else ModuleInstanceRegisterParametrization
+            # Obtain rewriters for applying the rotations
+            for tensor_name, axis in tensor_names_axis:
+                rewriter = rewriter_class(
+                    module=module,
+                    tensor_name=tensor_name,
+                    transform_module=RotationWeightParametrization(
+                        rot_mat=rot_mat,
+                        rot_func=rot_func,
+                        axis=axis,
+                        K=K,
+                    ))
                 rewriters.append(rewriter)
-    for r in rewriters:
-        model = r.apply(model)
+            # Replace by RotatedModule in orphan sink
+            if insert_rotation_module and len(region.srcs) == 0:
+                rewriter = ModuleInstanceWrapModule(
+                    module, RotatedModule, "layer", {
+                        "had_mat": rot_mat, "k": K})
+                rewriters.append(rewriter)
+    if apply_inplace_rotations:
+        for r in rewriters:
+            # The parametrizations need to be registered after the potential HF hooks have been
+            # removed, as otherwise the device maps will not match the structure of the
+            # model's state_dict after the registration of the parametrizations.
+            if not isinstance(r, ModuleInstanceRegisterParametrization):
+                model = r.apply(model)
     return rewriters
+
+
+# This function is adapted from https://github.com/huggingface/accelerate/blob/main/src/accelerate/utils/modeling.py
+def _untie_parameters_with_parametrizations(model: torch.nn.Module):
+    # get ALL model parameters and their names
+    all_named_parameters = {
+        name: param for name, param in model.named_parameters(remove_duplicate=False)}
+
+    # get ONLY unique named parameters,
+    # if parameter is tied and have multiple names, it will be included only once
+    no_duplicate_named_parameters = {
+        name: param for name, param in model.named_parameters(remove_duplicate=True)}
+
+    # the difference of the two sets will give us the tied parameters
+    tied_param_names = set(all_named_parameters.keys()) - set(no_duplicate_named_parameters.keys())
+
+    for tied_param_name in tied_param_names:
+        tied_param_name_split = tied_param_name.split(".")
+        # The names of the original parameters after registering the parametrization
+        # have the format "prefix.parametrizations.tensor_name.original", e.g.
+        # "model.layer.parametrizations.weight.original". This allows to identify
+        # which subset of tied parameters are original tied parameters of the module
+        if len(tied_param_name_split) >= 3 and tied_param_name_split[
+                -3] == "parametrizations" and tied_param_name_split[-1] == "original":
+            # If that is the case, retrieve the parent module
+            parent_module = recurse_getattr(model, ".".join(tied_param_name_split[:-1]))
+            # And set to a new parameter, thus breaking the tie
+            setattr(parent_module, "original", nn.Parameter(all_named_parameters[tied_param_name]))
+
+    return model
+
+
+def _fuse_rotations(model: nn.Module) -> nn.Module:
+    # First of all, parameters that have parametrizations need to be untied
+    model = _untie_parameters_with_parametrizations(model)
+    # Then, parametrizations can be safely removed
+    for module in model.modules():
+        # Names of the tensors that can potentially be parametrized
+        tensor_names = ["weight", "bias"]
+        # Remove parametrizations from each tensor
+        for tensor_name in tensor_names:
+            if parametrize.is_parametrized(module) and tensor_name in module.parametrizations:
+                parametrize.remove_parametrizations(module, tensor_name, leave_parametrized=True)
+    return model
 
 
 def _replace_bias(next_module, new_bias):
@@ -1428,6 +1512,7 @@ class GraphRotationEqualization(RotationEqualization):
             self,
             blacklist_layers: Optional[List[str]] = None,
             orphan_sink: bool = False,
+            sdpa_regions: bool = False,
             rotate_matmul: bool = False,
             full_rotation_method: str = 'had',
             return_rewriters: bool = False) -> None:
@@ -1445,6 +1530,7 @@ class GraphRotationEqualization(RotationEqualization):
         self.rotate_matmul = rotate_matmul
         self.full_rotation_method = full_rotation_method
         self.return_rewriters = return_rewriters
+        self.sdpa_regions = sdpa_regions
 
     def rotate_matmuls(self, graph_module):
         matmul_nodes = list(graph_module.graph.nodes)
@@ -1463,6 +1549,48 @@ class GraphRotationEqualization(RotationEqualization):
             graph_module.recompile()
             graph_module.graph.lint()
 
+    def rotate_sdpa(self, graph_module):
+        sdpa_nodes = list(graph_module.graph.nodes)
+        sdpa_nodes = [
+            c for c in sdpa_nodes if 'scaled_dot_product' in str(c.meta.get('orig_target', 'None'))]
+        regions = []
+
+        def find_src(node):
+            if node.op != 'call_module':
+                return find_src(node.args[0])
+            else:
+                return node
+
+        def find_sink(node):
+            output_node = list(node.users.keys())[0]
+            if output_node.op != 'call_module':
+                return find_sink(output_node)
+            else:
+                return output_node
+
+        for sdpa_node in sdpa_nodes:
+            value_input = sdpa_node.args[-1]
+
+            value_node = find_src(value_input)
+            output_node = find_sink(value_input)
+            sink_module = get_module(graph_module, output_node.target)
+            src_module = get_module(graph_module, value_node.target)
+            sink_weight = get_weight_sink(sink_module)
+            src_weight = get_weight_source(src_module)
+            sink_eq_indexes = EqualizationIndexes(0, sink_weight.shape[0], 0)
+            src_eq_indexes = EqualizationIndexes(0, src_weight.shape[0], 0)
+            region = Region(
+                srcs={'src0': src_eq_indexes},
+                sinks={'sink0': sink_eq_indexes},
+                name_to_module={
+                    'src0': src_module, 'sink0': sink_module})
+            regions.append(region)
+            for m in graph_module.modules():
+                if isinstance(m, ScaledDotProductAttention):
+                    m.pre_process_q = functional_rotate_input
+                    m.pre_process_k = functional_rotate_input
+        return regions
+
     def apply(self,
               graph_model: GraphModule) -> Union[Tuple[GraphModule, List[Transform]], GraphModule]:
         rewriters = []
@@ -1476,9 +1604,13 @@ class GraphRotationEqualization(RotationEqualization):
         eq_layers = set()
         orphan_regions = []
         self.find_module(graph_model, orphan_regions)
+        if self.sdpa_regions:
+            sdpa_regions = self.rotate_sdpa(graph_model)
+            regions.extend(sdpa_regions)
         for r in regions:
             id_list = [id(r.name_to_module[sink_name]) for sink_name in r.sinks_names]
             eq_layers.update(id_list)
+
         if self.orphan_sink:
             for o_r in orphan_regions:
                 # Layerwise have only a single sink named 'sinks0'

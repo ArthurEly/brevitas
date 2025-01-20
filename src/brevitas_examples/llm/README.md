@@ -47,9 +47,10 @@ usage: main.py [-h] [--config CONFIG] [--model MODEL] [--seed SEED]
                [--convert-layernorm-to-rmsnorm] [--replace-rmsnorm]
                [--no-quantize] [--no-float16]
                [--scaling-min-val SCALING_MIN_VAL] [--quant-sdpa]
-               [--replace-mha] [--weight-equalization]
-               [--rotation {fx,layerwise,fused_no_fx}]
+               [--functional-sdpa-quant] [--replace-mha]
+               [--weight-equalization] [--rotation {fx,layerwise,fused_no_fx}]
                [--rotation-mode {had,ort}] [--rotation-orphan-sink]
+               [--rotation-sdpa-regions]
                [--act-equalization {None,layerwise,fx}]
                [--act-equalization-alpha ACT_EQUALIZATION_ALPHA]
                [--load-awq LOAD_AWQ]
@@ -170,6 +171,9 @@ options:
                         fp16 quantization.
   --quant-sdpa          Quantize `F.scaled_dot_product_attention` (default:
                         False)
+  --functional-sdpa-quant
+                        Quantize `F.scaled_dot_product_attention` with
+                        stateless module and torch_function (default: False)
   --replace-mha         Replace HuggingFace Attention with a quantizable
                         version
   --weight-equalization
@@ -184,6 +188,9 @@ options:
   --rotation-orphan-sink
                         If GraphRotation is enabled, decide wheter to add
                         standalone hadamard matrices for the unfused layers
+  --rotation-sdpa-regions
+                        If GraphRotation is enabled, decide wheter to equalize
+                        across SDPA
   --act-equalization {None,layerwise,fx}
                         Apply activation equalization (SmoothQuant). Layerwise
                         introduces standalone mul nodes,while fx merges them
