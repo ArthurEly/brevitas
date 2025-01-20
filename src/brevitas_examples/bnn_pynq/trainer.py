@@ -24,6 +24,13 @@ from .logger import TrainingEpochMeters
 from .models import model_with_cfg
 from .models.losses import SqrHingeLoss
 
+#from .custom_data.coffee_toast.coffee_toast_prep import process_images, create_dataloaders, load_dataset
+
+from .custom_data.soybean_seeds.soybean_dataset_special_prep import create_custom_split, process_images, create_dataloaders
+
+from sklearn.metrics import confusion_matrix, classification_report
+import numpy as np
+import matplotlib.pyplot as plt
 
 class MirrorMNIST(MNIST):
 
@@ -64,7 +71,6 @@ class Trainer(object):
     def __init__(self, args):
 
         model, cfg = model_with_cfg(args.network, args.pretrained)
-
         # Init arguments
         self.args = args
         prec_name = "_{}W{}A".format(
@@ -92,29 +98,38 @@ class Trainer(object):
         # Datasets
         transform_to_tensor = transforms.Compose([transforms.ToTensor()])
 
-        dataset = cfg.get('MODEL', 'DATASET')
-        self.num_classes = cfg.getint('MODEL', 'NUM_CLASSES')
-        if dataset == 'CIFAR10':
-            train_transforms_list = [
-                transforms.RandomCrop(32, padding=4),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor()]
-            transform_train = transforms.Compose(train_transforms_list)
-            builder = CIFAR10
+        if self.args.custom_dataset == "soybean_seeds":
+            # Configurações específicas
+            base_dir = f'./custom_data/{self.args.custom_dataset}/'
+            classes = ['Broken soybeans', 'Intact soybeans', 'Spotted soybeans', 'Immature soybeans', 'Skin-damaged soybeans']
+            process_images(base_dir, classes, f'./custom_data/images.csv', f'./custom_data/labels.csv')
 
-        elif dataset == 'MNIST':
-            transform_train = transform_to_tensor
-            builder = MirrorMNIST
+            train_data, test_data = create_custom_split(f'./custom_data/images.csv', f'./custom_data/labels.csv')
+            self.train_loader, self.test_loader = create_dataloaders(train_data, test_data)
+            self.num_classes = 5
         else:
-            raise Exception("Dataset not supported: {}".format(args.dataset))
+            dataset = cfg.get('MODEL', 'DATASET')
+            self.num_classes = cfg.getint('MODEL', 'NUM_CLASSES')
+            if dataset == 'CIFAR10':
+                train_transforms_list = [
+                    transforms.RandomCrop(32, padding=4),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor()]
+                transform_train = transforms.Compose(train_transforms_list)
+                builder = CIFAR10
 
-        train_set = builder(root=args.datadir, train=True, download=True, transform=transform_train)
-        test_set = builder(
-            root=args.datadir, train=False, download=True, transform=transform_to_tensor)
-        self.train_loader = DataLoader(
-            train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-        self.test_loader = DataLoader(
-            test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+            elif dataset == 'MNIST':
+                transform_train = transform_to_tensor
+                builder = MirrorMNIST
+            else:
+                raise Exception("Dataset not supported: {}".format(args.dataset))
+
+            train_set = builder(root=args.datadir, train=True, download=True, transform=transform_train)
+            test_set = builder(root=args.datadir, train=False, download=True, transform=transform_to_tensor)
+            self.train_loader = DataLoader(
+                train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+            self.test_loader = DataLoader(
+                test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
         # Init starting values
         self.starting_epoch = 1
@@ -261,7 +276,7 @@ class Trainer(object):
                 epoch_meters.batch_time.update(time.time() - start_batch)
 
                 if i % int(self.args.log_freq) == 0 or i == len(self.train_loader) - 1:
-                    prec1, prec5 = accuracy(output.detach(), target, topk=(1, 5))
+                    prec1, prec5 = accuracy(output.detach(), target, topk=(1, 3))
                     epoch_meters.losses.update(loss.item(), input.size(0))
                     epoch_meters.top1.update(prec1.item(), input.size(0))
                     epoch_meters.top5.update(prec5.item(), input.size(0))
@@ -301,8 +316,10 @@ class Trainer(object):
         self.model.eval()
         self.criterion.eval()
 
-        for i, data in enumerate(self.test_loader):
+        all_preds = []
+        all_targets = []
 
+        for i, data in enumerate(self.test_loader):
             end = time.time()
             (input, target) = data
 
@@ -332,16 +349,70 @@ class Trainer(object):
             loss = self.criterion(output, target_var)
             eval_meters.loss_time.update(time.time() - end)
 
-            pred = output.data.argmax(1, keepdim=True)
+            pred = output.data.argmax(1, keepdim=False)
+            all_preds.extend(pred.cpu().numpy())
+            all_targets.extend(target.cpu().numpy())
+
             correct = pred.eq(target.data.view_as(pred)).sum()
             prec1 = 100. * correct.float() / input.size(0)
 
-            _, prec5 = accuracy(output, target, topk=(1, 5))
+            _, prec5 = accuracy(output, target, topk=(1, 3))
             eval_meters.losses.update(loss.item(), input.size(0))
             eval_meters.top1.update(prec1.item(), input.size(0))
             eval_meters.top5.update(prec5.item(), input.size(0))
 
             # Eval batch ends
             self.logger.eval_batch_cli_log(eval_meters, i, len(self.test_loader))
+
+        # Generate confusion matrix and metrics
+        conf_matrix = confusion_matrix(all_targets, all_preds)
+        class_report = classification_report(all_targets, all_preds, output_dict=True)
+
+        self.logger.info(f"Confusion Matrix:\n{conf_matrix}")
+        self.logger.info(f"Classification Report:\n{classification_report(all_targets, all_preds)}")
+        
+        pdf_filename = "none"
+
+        if epoch == None:
+            # Plot confusion matrix
+            fig, ax = plt.subplots(figsize=(8, 8))
+            im = ax.imshow(conf_matrix, cmap='Blues')
+
+            class_labels = ["immature", "intact", "abnormal"]
+
+            # Add labels and title
+            ax.set_title("Confusion Matrix", fontsize=16)
+            ax.set_xlabel("Predicted Labels", fontsize=14)
+            ax.set_ylabel("True Labels", fontsize=14)
+            ax.set_xticks(np.arange(len(class_labels)))
+            ax.set_yticks(np.arange(len(class_labels)))
+            ax.set_xticklabels(class_labels, fontsize=12, rotation=45, ha="right")  # Rotação para facilitar a leitura
+            ax.set_yticklabels(class_labels, fontsize=12)
+
+            # Annotate each cell in the matrix
+            for i in range(conf_matrix.shape[0]):
+                for j in range(conf_matrix.shape[1]):
+                    text = ax.text(j, i, f"{conf_matrix[i, j]}", 
+                                ha="center", va="center", color="black")
+
+            fig.colorbar(im, ax=ax)
+            plt.tight_layout()
+
+            # Save the confusion matrix as PDF
+            pdf_filename = f"{self.args.network}_confusion_matrix_epoch_{epoch or 'final'}.pdf"
+   
+            fig.savefig(pdf_filename)
+            plt.close(fig)
+            self.logger.info(f"Confusion Matrix PDF saved as {pdf_filename}")
+
+
+        metrics = {
+            "top1_accuracy": eval_meters.top1.avg,
+            "top5_accuracy": eval_meters.top5.avg,
+            "loss": eval_meters.losses.avg,
+            "confusion_matrix": conf_matrix,
+            "classification_report": class_report,
+            "pdf_filename": pdf_filename
+        }
 
         return eval_meters.top1.avg

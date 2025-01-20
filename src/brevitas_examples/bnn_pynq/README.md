@@ -20,7 +20,7 @@ These pretrained models and training scripts are courtesy of
 | CNV_1W1A | 8 bit                        | 1 bit               | 1 bit                   |  CIFAR10      |    84.22%     |
 | CNV_1W2A | 8 bit                        | 1 bit               | 2 bit                   |  CIFAR10      |    87.80%     |
 | CNV_2W2A | 8 bit                        | 2 bit               | 2 bit                   |  CIFAR10      |    89.03%     |
-| RESNET18_4W4A | 8 bit (assumed)         | 4 bit               | 4 bit                   |  CIFAR10      |    92.61%     |
+| RESNET18_4W4A | 8 bit (assumed)         | 4 bit               | 4 bit                   |  CIFAR10      |    92.60%     |
 
 ## Train
 
@@ -33,6 +33,8 @@ To start training a model from scratch, e.g. LFC_1W1A, run:
  ```bash
 BREVITAS_JIT=1 python bnn_pynq_train.py --network LFC_1W1A --experiments /path/to/experiments
  ```
+ 
+ BREVITAS_JIT=1 python3 bnn_pynq_train.py --network SOYBEAN_CNV_8W8A --experiments ./experiments/ --custom_dataset soybean_seeds
 
 ## Evaluate
 

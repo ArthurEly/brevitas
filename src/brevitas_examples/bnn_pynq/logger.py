@@ -76,7 +76,7 @@ class Logger(object):
             'Loss Time {loss_time.val:.3f} ({loss_time.avg:.3f})\t'
             'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
             'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-            'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
+            'Prec@3 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
                 batch,
                 tot_batches,
                 model_time=epoch_meters.model_time,
@@ -92,7 +92,7 @@ class Logger(object):
             'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
             'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
             'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-            'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
+            'Prec@3 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
                 epoch,
                 batch,
                 tot_batches,
