@@ -71,3 +71,8 @@ docsrc/source/_templates/
 
 # Notebooks
 /notebooks/.ipynb_checkpoints/
+*.csv
+*.png
+*.npy
+*.jpg
+/src/brevitas_examples/bnn_pynq/experiments
