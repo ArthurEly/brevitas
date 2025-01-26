@@ -38,7 +38,6 @@ def parse_args(args):
     parser = argparse.ArgumentParser(description="PyTorch MNIST/CIFAR10/Custom dataset Training")
     # I/O
     parser.add_argument("--datadir", default="./data/", help="Dataset location")
-    parser.add_argument("--custom_dataset", default="./custom_data/", help="Custom dataset location")
     parser.add_argument("--experiments", default="./experiments", help="Path to experiments folder")
     parser.add_argument("--dry_run", action="store_true", help="Disable output files generation")
     parser.add_argument("--log_freq", type=int, default=10)

@@ -26,9 +26,9 @@ from .models.losses import SqrHingeLoss
 
 #from .custom_data.coffee_toast.coffee_toast_prep import process_images, create_dataloaders, load_dataset
 
-from .custom_data.soybean_seeds.soybean_dataset_special_prep import create_custom_split, process_images, create_dataloaders
+from .custom_data.SOYBEAN_SEEDS.soybean_dataset_special_prep import create_custom_split, process_images, create_dataloaders
 
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import confusion_matrix, classification_report, ConfusionMatrixDisplay
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -98,18 +98,17 @@ class Trainer(object):
         # Datasets
         transform_to_tensor = transforms.Compose([transforms.ToTensor()])
 
-        if self.args.custom_dataset == "soybean_seeds":
-            # Configurações específicas
-            base_dir = f'./custom_data/{self.args.custom_dataset}/'
+        dataset = cfg.get('MODEL', 'DATASET')
+        self.num_classes = cfg.getint('MODEL', 'NUM_CLASSES')
+
+        if dataset == 'SOYBEAN_SEEDS':
+            base_dir = f'./custom_data/{dataset}/'
             classes = ['Broken soybeans', 'Intact soybeans', 'Spotted soybeans', 'Immature soybeans', 'Skin-damaged soybeans']
             process_images(base_dir, classes, f'./custom_data/images.csv', f'./custom_data/labels.csv')
-
             train_data, test_data = create_custom_split(f'./custom_data/images.csv', f'./custom_data/labels.csv')
             self.train_loader, self.test_loader = create_dataloaders(train_data, test_data)
             self.num_classes = 5
-        else:
-            dataset = cfg.get('MODEL', 'DATASET')
-            self.num_classes = cfg.getint('MODEL', 'NUM_CLASSES')
+        elif dataset == 'CIFAR10' or dataset == 'MNIST':
             if dataset == 'CIFAR10':
                 train_transforms_list = [
                     transforms.RandomCrop(32, padding=4),
@@ -117,19 +116,17 @@ class Trainer(object):
                     transforms.ToTensor()]
                 transform_train = transforms.Compose(train_transforms_list)
                 builder = CIFAR10
-
             elif dataset == 'MNIST':
                 transform_train = transform_to_tensor
                 builder = MirrorMNIST
-            else:
-                raise Exception("Dataset not supported: {}".format(args.dataset))
-
             train_set = builder(root=args.datadir, train=True, download=True, transform=transform_train)
             test_set = builder(root=args.datadir, train=False, download=True, transform=transform_to_tensor)
             self.train_loader = DataLoader(
                 train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
             self.test_loader = DataLoader(
                 test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        else:
+            raise Exception("Dataset not supported: {}".format(args.dataset))
 
         # Init starting values
         self.starting_epoch = 1
@@ -373,37 +370,51 @@ class Trainer(object):
         
         pdf_filename = "none"
 
-        if epoch == None:
-            # Plot confusion matrix
+        if epoch is None:
+            # Resetar o estado do gráfico, se necessário
+            plt.clf()  # Limpar figura anterior, se houver
+
+            # Plotando a matriz de confusão
             fig, ax = plt.subplots(figsize=(8, 8))
-            im = ax.imshow(conf_matrix, cmap='Blues')
 
+            # Usar 'cmap' para colorir a matriz e configurar o intervalo de valores
+            im = ax.imshow(conf_matrix, cmap='Blues', vmin=0, vmax=np.max(conf_matrix))
+
+            # Adicionando rótulos e título
+            ax.set_title("Confusion Matrix", fontsize=20)
+            ax.set_xlabel("Predicted Labels", fontsize=18)
+            ax.set_ylabel("True Labels", fontsize=18)
+
+            # Definindo os rótulos das classes
             class_labels = ["immature", "intact", "abnormal"]
-
-            # Add labels and title
-            ax.set_title("Confusion Matrix", fontsize=16)
-            ax.set_xlabel("Predicted Labels", fontsize=14)
-            ax.set_ylabel("True Labels", fontsize=14)
             ax.set_xticks(np.arange(len(class_labels)))
             ax.set_yticks(np.arange(len(class_labels)))
-            ax.set_xticklabels(class_labels, fontsize=12, rotation=45, ha="right")  # Rotação para facilitar a leitura
-            ax.set_yticklabels(class_labels, fontsize=12)
+            ax.set_xticklabels(class_labels, fontsize=16, rotation=45, ha="right")  # Rotação para facilitar a leitura
+            ax.set_yticklabels(class_labels, fontsize=16)
 
-            # Annotate each cell in the matrix
+            # Adicionando a barra de cores
+            fig.colorbar(im, ax=ax)
+
+            # Adicionando anotações na matriz
             for i in range(conf_matrix.shape[0]):
                 for j in range(conf_matrix.shape[1]):
-                    text = ax.text(j, i, f"{conf_matrix[i, j]}", 
-                                ha="center", va="center", color="black")
+                    value = conf_matrix[i, j]
+                    # Calculando a cor da fonte com base no valor do fundo
+                    print(np.mean(im.get_array()[i, j]))
+                    color = 'black' if im.get_array()[i, j] < 500 else 'white'
+                    text = ax.text(j, i, f"{value}",
+                                ha="center", va="center", color=color, fontsize=18)
 
-            fig.colorbar(im, ax=ax)
+            # Ajuste do layout
             plt.tight_layout()
 
-            # Save the confusion matrix as PDF
-            pdf_filename = f"{self.args.network}_confusion_matrix_epoch_{epoch or 'final'}.pdf"
-   
+            # Salvando a matriz de confusão como um arquivo SVG
+            pdf_filename = f"{self.args.network}_confusion_matrix.png"
             fig.savefig(pdf_filename)
-            plt.close(fig)
-            self.logger.info(f"Confusion Matrix PDF saved as {pdf_filename}")
+            plt.close(fig)  # Fechar a figura para liberar memória
+
+            # Log de sucesso
+            print(f"Confusion Matrix PNG saved as {pdf_filename}")
 
 
         metrics = {

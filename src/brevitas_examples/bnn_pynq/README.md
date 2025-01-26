@@ -34,7 +34,7 @@ To start training a model from scratch, e.g. LFC_1W1A, run:
 BREVITAS_JIT=1 python bnn_pynq_train.py --network LFC_1W1A --experiments /path/to/experiments
  ```
  
- BREVITAS_JIT=1 python3 bnn_pynq_train.py --network SOYBEAN_CNV_8W8A --experiments ./experiments/ --custom_dataset soybean_seeds
+ BREVITAS_JIT=1 python3 bnn_pynq_train.py --network SOYBEAN_CNV_8W8A --experiments ./experiments/
 
 ## Evaluate
 
@@ -48,4 +48,4 @@ To evaluate your own checkpoint, of e.g. LFC_1W1A, run:
 BREVITAS_JIT=1 python bnn_pynq_train.py --evaluate --network LFC_1W1A --resume /path/to/checkpoint.tar
  ```
 
-  BREVITAS_JIT=1 python3 bnn_pynq_train.py --evaluate --network SOYBEAN_CNV_8W8A --resume /home/artti/Desktop/finn_att/finn/deps/brevitas/src/brevitas_examples/bnn_pynq/experiments/SOYBEAN_CNV_8W8A_8W8A_20250119_235655/checkpoints/best.tar --custom_dataset soybean_seeds
+  BREVITAS_JIT=1 python3 bnn_pynq_train.py --evaluate --network SOYBEAN_CNV_1W1A --resume /home/artti/Desktop/finn_att/finn/deps/brevitas/src/brevitas_examples/bnn_pynq/experiments/SOYBEAN_CNV_1W1A_1W1A_20250123_005347/checkpoints/best.tar --custom_dataset soybean_seeds && BREVITAS_JIT=1 python3 bnn_pynq_train.py --evaluate --network SOYBEAN_CNV_2W2A --resume /home/artti/Desktop/finn_att/finn/notebooks/soybean_seeds/cnns/SOYBEAN_CNV_2W2A_2W2A_20250123_031247/checkpoints/best.tar --custom_dataset soybean_seeds

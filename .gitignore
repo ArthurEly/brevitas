@@ -76,3 +76,4 @@ docsrc/source/_templates/
 *.npy
 *.jpg
 /src/brevitas_examples/bnn_pynq/experiments
+*.svg

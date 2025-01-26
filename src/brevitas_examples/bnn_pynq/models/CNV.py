@@ -19,12 +19,12 @@ from .common import CommonUintActQuant
 from .common import CommonWeightQuant
 from .tensor_norm import TensorNorm
 
-KERNEL_SIZE = 6
-LAST_FC_IN_FEATURES = 1152
-CNV_OUT_CH_POOL = [(32, False, 4), (16, True, 4), (32, False, 4), (16, True, 5), (32, False, 6)]
-INTERMEDIATE_FC_FEATURES = []
+CNV_OUT_CH_POOL = [(64, False), (64, True), (128, False), (128, True), (256, False), (256, False)]
+INTERMEDIATE_FC_FEATURES = [(256, 512), (512, 512)]
+LAST_FC_IN_FEATURES = 512
 LAST_FC_PER_OUT_CH_SCALING = False
 POOL_SIZE = 2
+KERNEL_SIZE = 3
 
 
 class CNV(Module):
@@ -43,10 +43,10 @@ class CNV(Module):
             narrow_range=False,
             restrict_scaling_type=RestrictValueType.POWER_OF_TWO))
 
-        for out_ch, is_pool_enabled, kernel in CNV_OUT_CH_POOL:
+        for out_ch, is_pool_enabled in CNV_OUT_CH_POOL:
             self.conv_features.append(
                 QuantConv2d(
-                    kernel_size=kernel,
+                    kernel_size=KERNEL_SIZE,
                     in_channels=in_ch,
                     out_channels=out_ch,
                     bias=False,
@@ -55,7 +55,7 @@ class CNV(Module):
             in_ch = out_ch
             self.conv_features.append(BatchNorm2d(in_ch, eps=1e-4))
             self.conv_features.append(
-                QuantReLU(act_quant=CommonUintActQuant, bit_width=act_bit_width))
+                QuantIdentity(act_quant=CommonActQuant, bit_width=act_bit_width))
             if is_pool_enabled:
                 self.conv_features.append(MaxPool2d(kernel_size=2))
 
@@ -69,7 +69,7 @@ class CNV(Module):
                     weight_bit_width=weight_bit_width))
             self.linear_features.append(BatchNorm1d(out_features, eps=1e-4))
             self.linear_features.append(
-                QuantReLU(act_quant=CommonUintActQuant, bit_width=act_bit_width))
+                QuantIdentity(act_quant=CommonActQuant, bit_width=act_bit_width))
 
         self.linear_features.append(
             QuantLinear(
